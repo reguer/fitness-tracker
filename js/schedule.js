@@ -186,6 +186,29 @@ const WEEKEND_VARIANTS = {
 };
 
 // ── Función principal de consulta ────────────
+function applyOverridesToSchedule(date, activities) {
+  var overrides = getScheduleOverrides();
+  var d = new Date(date + 'T00:00:00');
+  var dayOfWeek = d.getDay() || 7;
+  var result = activities.slice();
+  overrides.forEach(function(ov) {
+    var inRange = ov.scope === 'week'
+      ? (date >= ov.fromDate && (!ov.toDate || date <= ov.toDate))
+      : date >= ov.fromDate;
+    if (!inRange) return;
+    if (dayOfWeek === ov.fromDay) {
+      result = result.filter(function(a) { return a.id !== ov.activityId; });
+    }
+    if (dayOfWeek === ov.toDay) {
+      var actDef = ACTIVITIES[ov.activityId];
+      if (actDef && !result.find(function(a) { return a.id === ov.activityId; })) {
+        result.push(Object.assign({}, actDef, { movedFrom: ov.fromDay }));
+      }
+    }
+  });
+  return result;
+}
+
 /**
  * Devuelve el array de actividades para una fecha dada.
  * @param {Date|string} date
@@ -221,7 +244,8 @@ function getSchedule(date, stageId, variant, satWasKB) {
   }
 
   const sched = SCHEDULES[scheduleKey];
-  return (sched && sched[dayKey]) ? sched[dayKey] : [];
+  var base = (sched && sched[dayKey]) ? sched[dayKey] : [];
+  return applyOverridesToSchedule(typeof date === 'string' ? date : toDateStr(date), base);
 }
 
 // ── Conteos mínimos de la semana ─────────────

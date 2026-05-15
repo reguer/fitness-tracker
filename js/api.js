@@ -82,6 +82,7 @@ function initDayLog(dateStr) {
     stage: stageId,
     weekInStage: getWeekInStage(dateStr),
     satWasKB,
+    dayStatus: 'normal',
     activities: scheduled.map(act => ({
       id: act.id,
       status: null,
@@ -139,6 +140,12 @@ function getWeekStats(dateStr) {
     const scheduled = getSchedule(
       log.date, stageId, meta.stage11Variant, log.satWasKB
     );
+
+    if (log.dayStatus === 'rest') {
+      totalScheduled += scheduled.length;
+      totalDone      += scheduled.length * 0.7;
+      return;
+    }
 
     scheduled.forEach(act => {
       totalScheduled++;
@@ -235,4 +242,79 @@ async function fullSync(weeksBack = 2) {
     }
   }
   return { synced };
+}
+
+// ── Perfil de usuario ─────────────────────────
+function getProfile() { return lsGet('profile') || null; }
+function saveProfile(p) { lsSet('profile', Object.assign({}, p, { updatedAt: new Date().toISOString() })); }
+function isProfileComplete() { var p = getProfile(); return !!(p && p.weight && p.height && p.age); }
+
+// ── Nutrición diaria ──────────────────────────
+function getNutritionLog(dateStr) {
+  return lsGet('nutrition_' + dateStr) || { date: dateStr, checklist: {}, breakfast_category: null, protein_type: null, updatedAt: null };
+}
+function saveNutritionLog(log) {
+  log.updatedAt = new Date().toISOString();
+  lsSet('nutrition_' + log.date, log);
+}
+function toggleNutritionCheck(dateStr, checkId) {
+  var log = getNutritionLog(dateStr);
+  log.checklist[checkId] = !log.checklist[checkId];
+  saveNutritionLog(log);
+  return log;
+}
+function setBreakfastCategory(dateStr, category) {
+  var log = getNutritionLog(dateStr);
+  log.breakfast_category = log.breakfast_category === category ? null : category;
+  saveNutritionLog(log);
+}
+function getWeeklyNutritionStats(dateStr) {
+  var monday = getMondayOfWeek(new Date(dateStr + 'T00:00:00'));
+  var fish = 0, fruit = 0, liver = 0;
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(monday); d.setDate(d.getDate() + i);
+    var log = getNutritionLog(toDateStr(d));
+    if (log.protein_type === 'fish') fish++;
+    if (log.breakfast_category === 'fruit_only') fruit++;
+    if (log.checklist && log.checklist.nc_hepatic_food) liver++;
+  }
+  return { fish: fish, fruit: fruit, liver: liver };
+}
+
+// ── Medidas corporales ────────────────────────
+function getBodyMetrics(limit) {
+  return (lsGet('metrics') || []).slice(0, limit || 52);
+}
+function saveBodyMetric(entry) {
+  var all = lsGet('metrics') || [];
+  var idx = all.findIndex(function(e) { return e.date === entry.date; });
+  entry.savedAt = new Date().toISOString();
+  if (idx >= 0) all[idx] = entry; else all.unshift(entry);
+  all.sort(function(a, b) { return b.date.localeCompare(a.date); });
+  lsSet('metrics', all);
+}
+function getLatestMetric() { return getBodyMetrics(1)[0] || null; }
+
+// ── Marcadores de laboratorio ─────────────────
+function getBiomarkers() { return lsGet('biomarkers') || []; }
+function saveBiomarkerEntry(entry) {
+  var all = getBiomarkers();
+  var idx = all.findIndex(function(e) { return e.date === entry.date; });
+  entry.savedAt = new Date().toISOString();
+  if (idx >= 0) all[idx] = entry; else all.unshift(entry);
+  all.sort(function(a, b) { return b.date.localeCompare(a.date); });
+  lsSet('biomarkers', all);
+}
+
+// ── Overrides de horario ──────────────────────
+function getScheduleOverrides() { return lsGet('schedule_overrides') || []; }
+function addScheduleOverride(ov) {
+  var all = getScheduleOverrides();
+  ov.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  ov.createdAt = new Date().toISOString();
+  all.push(ov);
+  lsSet('schedule_overrides', all);
+}
+function removeScheduleOverride(id) {
+  lsSet('schedule_overrides', getScheduleOverrides().filter(function(o) { return o.id !== id; }));
 }

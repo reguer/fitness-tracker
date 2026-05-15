@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderHeader();
   bindTabs();
   renderAll();
+  checkOnboarding();
   document.getElementById('sync-btn').addEventListener('click', handleManualSync);
 });
 
@@ -69,6 +70,10 @@ function renderToday() {
   // Navegación de día
   const prevDate = offsetDate(dateStr, -1);
   const nextDate = offsetDate(dateStr,  1);
+  const dayStatusBtns = '<div class="day-status-btns">' +
+    '<button class="dsb ' + (log.dayStatus === 'complete' ? 'active' : '') + '" onclick="setDayStatus(\'' + dateStr + '\',\'complete\')">✅ Día completo</button>' +
+    '<button class="dsb ' + (log.dayStatus === 'rest'     ? 'active' : '') + '" onclick="setDayStatus(\'' + dateStr + '\',\'rest\')">🛌 Descanso</button>' +
+    '</div>';
 
   container.innerHTML = `
     <div class="day-nav">
@@ -84,6 +89,8 @@ function renderToday() {
     <div class="minimums-bar">
       ${renderMiniBar(stats)}
     </div>
+
+    ${dayStatusBtns}
 
     <div class="activity-list">
       ${scheduled.length === 0
@@ -138,6 +145,7 @@ function renderActivityCard(act, log, dateStr) {
             >${statusIcon(s)}</button>
           `).join('')}
         </div>
+        <button class="move-btn" onclick="showMoveModal('${dateStr}','${act.id}','${act.name}')" title="Mover">⇄</button>
       </div>
     </div>
     <details class="act-details">
@@ -361,24 +369,88 @@ function renderProgress() {
 
 // ── Vista: NUTRICIÓN (Parte 2) ─────────────────
 function renderNutrition() {
-  document.getElementById('tab-nutrition').innerHTML = `
-    <div class="nutrition-placeholder">
-      <div class="np-icon">🍽️</div>
-      <h2>Plan Nutricional</h2>
-      <p class="np-label">Parte 2 — Próximamente</p>
-      <p class="np-desc">
-        Esta sección se completará con tu dieta existente y restricciones
-        alimentarias como segunda parte de la sesión de trabajo.
-      </p>
-      <div class="np-sections">
-        <div class="np-section">📋 Dieta base adaptada a tus restricciones</div>
-        <div class="np-section">🔢 Calorías y macros por día / etapa</div>
-        <div class="np-section">⏱️ Timing pre / post entreno</div>
-        <div class="np-section">💊 Suplementos recomendados</div>
-        <div class="np-section">📅 Variación por carga semanal (BJJ vs. gym solo)</div>
-      </div>
-    </div>
-  `;
+  var dateStr  = STATE.today;
+  var nutLog   = getNutritionLog(dateStr);
+  var weekStats = getWeeklyNutritionStats(dateStr);
+  var stageId  = getStageForDate(dateStr);
+  var meal     = NUTRITION_PLAN.meals[stageId] || NUTRITION_PLAN.meals['0'];
+  var biomarks = getBiomarkers();
+  var latest   = biomarks[0] || null;
+
+  var checklistHTML = NUTRITION_PLAN.daily_rituals.map(function(item) {
+    var checked = !!(nutLog.checklist && nutLog.checklist[item.id]);
+    return '<label class="nut-check-item ' + (checked ? 'checked' : '') + '" onclick="handleNutCheck(\'' + dateStr + '\',\'' + item.id + '\')">' +
+      '<span class="nc-emoji">' + item.emoji + '</span>' +
+      '<span class="nc-label">' + item.name + '</span>' +
+      '<span class="nc-box">' + (checked ? '✓' : '') + '</span>' +
+      '</label>';
+  }).join('');
+
+  var bkCats = Object.keys(NUTRITION_PLAN.breakfast_categories).map(function(key) {
+    var cat = NUTRITION_PLAN.breakfast_categories[key];
+    var active = nutLog.breakfast_category === key;
+    return '<button class="bcat-btn ' + (active ? 'active' : '') + '" onclick="handleBkCat(\'' + dateStr + '\',\'' + key + '\')">' +
+      cat.emoji + ' ' + cat.label + '</button>';
+  }).join('');
+
+  var bkDetail = '';
+  if (nutLog.breakfast_category) {
+    var cat = NUTRITION_PLAN.breakfast_categories[nutLog.breakfast_category];
+    bkDetail = cat.options.map(function(o) { return '<div class="bopt">' + o + '</div>'; }).join('') +
+      '<p class="nut-rule">💡 ' + cat.rule + '</p>';
+  }
+
+  var targetsHTML = Object.keys(NUTRITION_PLAN.weekly_targets).map(function(key) {
+    var t = NUTRITION_PLAN.weekly_targets[key];
+    var done = weekStats[key] || 0;
+    var dots = '';
+    for (var i = 0; i < t.target; i++) {
+      dots += '<span class="nut-dot ' + (i < done ? 'filled' : '') + '">●</span>';
+    }
+    return '<div class="nut-target-row"><span class="nt-label">' + t.label + '</span>' +
+      '<span class="nt-dots">' + dots + ' <span class="muted">' + done + '/' + t.target + '</span></span></div>';
+  }).join('');
+
+  var bmarkHTML = NUTRITION_PLAN.biomarkers_baseline.map(function(bm) {
+    var cur = latest ? latest[bm.id] : null;
+    var improved = cur ? (bm.dir === 'down' ? cur < bm.baseline : cur > bm.baseline) : false;
+    var curStr = cur ? '<span class="bm-current ' + (improved ? 'improved' : 'regressed') + '">' + cur + '</span>' : '<span class="bm-current muted">—</span>';
+    return '<div class="bm-row"><span class="bm-name">' + bm.name + '</span>' +
+      '<span class="bm-baseline muted">' + bm.baseline + '</span>' +
+      '<span class="bm-arrow muted">' + (bm.dir === 'down' ? '↓' : '↑') + '</span>' +
+      '<span class="bm-goal">' + bm.goal + ' ' + bm.unit + '</span>' + curStr + '</div>';
+  }).join('');
+
+  var prof = getProfile();
+  var profStr = prof ? (prof.weight + 'kg · ' + prof.height + 'cm · ' + prof.age + ' años · ' + (prof.goal || '')) : 'Sin configurar';
+
+  document.getElementById('tab-nutrition').innerHTML =
+    '<div class="nut-header"><h2>Nutrición</h2>' +
+    '<span class="stage-label">' + CONFIG.STAGES[stageId].short + ' · ' + meal.protein_g + 'g proteína/día</span></div>' +
+
+    '<div class="prog-card"><h3>Checklist de hoy</h3>' +
+    '<div class="nut-checklist">' + checklistHTML + '</div></div>' +
+
+    '<div class="prog-card"><h3>Desayuno de hoy</h3>' +
+    '<div class="breakfast-cats">' + bkCats + '</div>' +
+    (bkDetail ? '<div class="breakfast-options">' + bkDetail + '</div>' : '<p class="muted" style="font-size:13px">Elige la categoría de desayuno</p>') +
+    '</div>' +
+
+    '<div class="prog-card"><h3>Meta semanal</h3>' + targetsHTML + '</div>' +
+
+    '<div class="prog-card"><h3>Marcadores de laboratorio</h3>' +
+    '<p class="muted" style="font-size:12px;margin-bottom:10px">Línea base: enero 2026</p>' +
+    '<div class="biomarker-list">' + bmarkHTML + '</div>' +
+    '<button class="btn-outline mt-8" onclick="showBiomarkerModal()">+ Registrar nuevos estudios</button></div>' +
+
+    '<div class="prog-card"><h3>Tu perfil</h3>' +
+    '<p style="font-size:13px;color:var(--text-muted);margin-bottom:10px">' + profStr + '</p>' +
+    '<button class="btn-outline" onclick="showProfileModal(true)">Editar perfil</button></div>' +
+
+    '<div class="prog-card"><h3>Indicaciones de esta etapa</h3>' +
+    '<p style="font-size:13px;color:var(--text-muted);line-height:1.6">' + meal.notes + '</p>' +
+    '<div class="nut-rule mt-8">🏃 Pre-entreno: ' + meal.pre + '</div>' +
+    '<div class="nut-rule" style="margin-top:6px">💪 Post-entreno: ' + meal.post + '</div></div>';
 }
 
 // ── Handlers de eventos ───────────────────────
@@ -489,4 +561,148 @@ function statusLabel(s) {
 
 function statusIcon(s) {
   return { done: '✓', partial: '~', skip: '✕' }[s] || s;
+}
+
+// ── Handlers de nutrición ─────────────────────
+function handleNutCheck(dateStr, checkId) {
+  toggleNutritionCheck(dateStr, checkId);
+  renderNutrition();
+}
+function handleBkCat(dateStr, category) {
+  setBreakfastCategory(dateStr, category);
+  renderNutrition();
+}
+
+// ── Modal de marcadores ───────────────────────
+function showBiomarkerModal() {
+  var fields = [
+    { id:'alt',          label:'ALT/TGP (U/L)',     ph:'99'  },
+    { id:'triglycerides',label:'Triglicéridos mg/dL',ph:'205' },
+    { id:'vldl',         label:'VLDL mg/dL',         ph:'41'  },
+    { id:'hdl',          label:'HDL mg/dL',           ph:'48'  },
+    { id:'ige',          label:'IgE UI/mL',           ph:'252' },
+    { id:'ldl',          label:'LDL mg/dL',           ph:'107' }
+  ];
+  var rows = fields.map(function(f) {
+    return '<div class="config-row"><label class="muted">' + f.label + '</label>' +
+      '<input type="number" id="bm-' + f.id + '" class="form-input" style="width:80px;padding:4px 8px" placeholder="' + f.ph + '"></div>';
+  }).join('');
+  var html = '<div class="modal-overlay" id="bm-modal"><div class="modal-sheet">' +
+    '<h3 class="modal-title">Registrar estudios</h3>' + rows +
+    '<button class="btn-primary mt-8" onclick="saveBmModal()">Guardar</button>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'bm-modal\').remove()">Cancelar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+function saveBmModal() {
+  var entry = { date: STATE.today };
+  ['alt','triglycerides','vldl','hdl','ige','ldl'].forEach(function(id) {
+    var el = document.getElementById('bm-' + id);
+    if (el && el.value) entry[id] = parseFloat(el.value);
+  });
+  saveBiomarkerEntry(entry);
+  document.getElementById('bm-modal').remove();
+  renderNutrition();
+}
+
+// ── Perfil de usuario ─────────────────────────
+function checkOnboarding() {
+  if (!isProfileComplete()) showProfileModal(false);
+}
+function showProfileModal(dismissible) {
+  var prof = getProfile() || {};
+  var goals = [
+    {v:'recomposition', l:'Recomposición (músculo + definición)'},
+    {v:'fat_loss',      l:'Perder grasa'},
+    {v:'muscle_gain',   l:'Ganar músculo'},
+    {v:'performance',   l:'Rendimiento deportivo (BJJ/Box)'},
+    {v:'health',        l:'Salud general'}
+  ];
+  var goalOpts = goals.map(function(g) {
+    return '<option value="' + g.v + '"' + (prof.goal === g.v ? ' selected' : '') + '>' + g.l + '</option>';
+  }).join('');
+  var measures = [
+    {id:'waist', ph:'Cintura (cm)'},{id:'hip',   ph:'Cadera (cm)'},
+    {id:'chest', ph:'Pecho (cm)'}, {id:'bicepR', ph:'Bíceps D (cm)'},{id:'thighR',ph:'Muslo D (cm)'}
+  ];
+  var measInputs = measures.map(function(m) {
+    return '<input id="pf-' + m.id + '" type="number" class="form-input" style="margin-top:6px" placeholder="' + m.ph + '"' +
+      (prof[m.id] ? ' value="' + prof[m.id] + '"' : '') + '>';
+  }).join('');
+  var html = '<div class="onboarding-overlay" id="profile-modal">' +
+    '<h2 style="font-size:22px;font-weight:700;margin-bottom:4px">Tu perfil</h2>' +
+    '<p style="font-size:13px;color:var(--text-muted);margin-bottom:20px">Peso, altura y edad son obligatorios.</p>' +
+    '<div class="profile-form">' +
+    '<div class="form-group"><label class="form-label">Peso actual (kg)</label><input id="pf-weight" type="number" class="form-input" placeholder="ej: 80"' + (prof.weight ? ' value="'+prof.weight+'"' : '') + '></div>' +
+    '<div class="form-group"><label class="form-label">Altura (cm)</label><input id="pf-height" type="number" class="form-input" placeholder="ej: 178"' + (prof.height ? ' value="'+prof.height+'"' : '') + '></div>' +
+    '<div class="form-group"><label class="form-label">Edad</label><input id="pf-age" type="number" class="form-input" placeholder="ej: 36"' + (prof.age ? ' value="'+prof.age+'"' : '') + '></div>' +
+    '<div class="form-group"><label class="form-label">Objetivo</label><select id="pf-goal" class="form-input">' + goalOpts + '</select></div>' +
+    '<div class="form-group"><label class="form-label">Medidas opcionales</label>' + measInputs + '</div>' +
+    '<button class="btn-primary" onclick="saveProfileModal()">Guardar perfil</button>' +
+    (dismissible ? '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'profile-modal\').remove()">Cerrar</button>' : '') +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+function saveProfileModal() {
+  var w = parseFloat(document.getElementById('pf-weight').value);
+  var h = parseFloat(document.getElementById('pf-height').value);
+  var a = parseInt(document.getElementById('pf-age').value);
+  if (!w || !h || !a) { alert('Peso, altura y edad son obligatorios.'); return; }
+  var p = { weight:w, height:h, age:a, goal: document.getElementById('pf-goal').value };
+  ['waist','hip','chest','bicepR','thighR'].forEach(function(id) {
+    var el = document.getElementById('pf-' + id);
+    if (el && el.value) p[id] = parseFloat(el.value);
+  });
+  saveProfile(p);
+  document.getElementById('profile-modal').remove();
+  renderAll();
+}
+
+// ── Estado de día completo ────────────────────
+function setDayStatus(dateStr, newStatus) {
+  var log = getDayLog(dateStr) || initDayLog(dateStr);
+  log.dayStatus = log.dayStatus === newStatus ? 'normal' : newStatus;
+  if (log.dayStatus === 'complete') {
+    log.activities.forEach(function(a) { if (!a.status) a.status = 'done'; });
+  }
+  saveDayLog(log);
+  renderToday();
+  renderHeader();
+}
+
+// ── Mover sesiones ────────────────────────────
+function showMoveModal(dateStr, activityId, actName) {
+  var monday = getMondayOfWeek(new Date(dateStr + 'T00:00:00'));
+  var dayNames = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  var opts = '';
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(monday); d.setDate(d.getDate() + i);
+    var ds = toDateStr(d);
+    if (ds === dateStr) continue;
+    opts += '<button class="modal-opt" onclick="applyMoveDay(\'' + dateStr + '\',\'' + activityId + '\',\'' + ds + '\')">' +
+      dayNames[i] + ' ' + formatDayNum(d) + '</button>';
+  }
+  var html = '<div class="modal-overlay" id="move-modal"><div class="modal-sheet">' +
+    '<h3 class="modal-title">Mover: ' + actName + '</h3>' +
+    '<p class="muted" style="font-size:12px;margin-bottom:10px">Solo esta semana</p>' +
+    '<div class="modal-opts">' + opts + '</div>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'move-modal\').remove()">Cancelar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+function applyMoveDay(fromDate, activityId, toDate) {
+  var fromD  = new Date(fromDate + 'T00:00:00');
+  var toD    = new Date(toDate   + 'T00:00:00');
+  var monday = getMondayOfWeek(fromD);
+  var sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+  addScheduleOverride({
+    activityId: activityId,
+    fromDay:    fromD.getDay() || 7,
+    toDay:      toD.getDay()   || 7,
+    scope:      'week',
+    fromDate:   fromDate,
+    toDate:     toDateStr(sunday)
+  });
+  document.getElementById('move-modal').remove();
+  renderAll();
 }
