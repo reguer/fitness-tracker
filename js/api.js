@@ -5,6 +5,7 @@
 
 const LS_PREFIX = 'fittracker_';
 const LS_META   = 'fittracker_meta';
+const LS_ACTIVE_USER = 'fittracker_active_user';
 
 // ── Estructura de un log diario ───────────────
 // {
@@ -22,17 +23,75 @@ const LS_META   = 'fittracker_meta';
 // ── Helpers de localStorage ───────────────────
 
 function lsGet(key) {
-  try { return JSON.parse(localStorage.getItem(LS_PREFIX + key)); }
+  try { return JSON.parse(localStorage.getItem(getScopedLSKey(key))); }
   catch { return null; }
 }
 
 function lsSet(key, value) {
-  try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(value)); return true; }
+  try {
+    localStorage.setItem(getScopedLSKey(key), JSON.stringify(value));
+    queueCloudSave(key, value);
+    return true;
+  }
   catch { return false; }
 }
 
 function lsDel(key) {
-  localStorage.removeItem(LS_PREFIX + key);
+  localStorage.removeItem(getScopedLSKey(key));
+}
+
+function getStorageUserId() {
+  return localStorage.getItem(LS_ACTIVE_USER) || 'local';
+}
+
+function setStorageUserId(uid) {
+  localStorage.setItem(LS_ACTIVE_USER, uid || 'local');
+}
+
+function getScopedLSKey(key) {
+  const uid = getStorageUserId();
+  if (uid === 'local') return LS_PREFIX + key;
+  return LS_PREFIX + 'u_' + uid + '_' + key;
+}
+
+function getActiveUser() {
+  return lsGet('active_user') || { uid: getStorageUserId(), name: 'Local', email: '', provider: 'local' };
+}
+
+function saveActiveUser(user) {
+  const clean = user || { uid: 'local', name: 'Local', email: '', provider: 'local' };
+  setStorageUserId(clean.uid || 'local');
+  lsSet('active_user', clean);
+}
+
+function migrateLocalDataToUser(uid) {
+  if (!uid || uid === 'local') return 0;
+  const migratedFlag = LS_PREFIX + 'migrated_' + uid;
+  if (localStorage.getItem(migratedFlag)) return 0;
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.indexOf(LS_PREFIX) === 0 && k.indexOf(LS_PREFIX + 'u_') !== 0 && k !== LS_ACTIVE_USER && k.indexOf(LS_PREFIX + 'migrated_') !== 0) {
+      keys.push(k);
+    }
+  }
+  keys.forEach(k => {
+    const shortKey = k.slice(LS_PREFIX.length);
+    const scoped = LS_PREFIX + 'u_' + uid + '_' + shortKey;
+    if (!localStorage.getItem(scoped)) localStorage.setItem(scoped, localStorage.getItem(k));
+  });
+  localStorage.setItem(migratedFlag, new Date().toISOString());
+  return keys.length;
+}
+
+function hasFirebaseConfig() {
+  return !!(CONFIG.FIREBASE_CONFIG && CONFIG.FIREBASE_CONFIG.apiKey && CONFIG.FIREBASE_CONFIG.projectId);
+}
+
+function queueCloudSave(key, value) {
+  if (getStorageUserId() === 'local') return;
+  if (!window.FitFirebase || !window.FitFirebase.saveUserDoc) return;
+  window.FitFirebase.saveUserDoc(key, value).catch(err => console.warn('[FitTracker] Firebase save failed:', err.message));
 }
 
 // ── Meta (config persistida del usuario) ──────
@@ -47,6 +106,64 @@ function getMeta() {
 
 function saveMeta(meta) {
   lsSet('meta', { ...getMeta(), ...meta, savedAt: new Date().toISOString() });
+}
+
+// ── Configuración editable del programa ───────
+
+function getDefaultProgramSettings() {
+  return {
+    stages: JSON.parse(JSON.stringify(DEFAULT_STAGES)),
+    progression: {
+      base: DEFAULT_PROGRESSION.base,
+      min: 0.025,
+      recommended: 0.05,
+      max: 0.10,
+      compound: DEFAULT_PROGRESSION.compound,
+      deload: DEFAULT_PROGRESSION.deload,
+      deloadEvery: CONFIG.DELOAD_EVERY
+    },
+    stage11Variant: getMeta().stage11Variant || CONFIG.STAGE_11_VARIANT,
+    dietTemplate: 'hepatic',
+    updatedAt: null
+  };
+}
+
+function getProgramSettings() {
+  const saved = lsGet('program_settings') || {};
+  const defaults = getDefaultProgramSettings();
+  return {
+    stages: Object.assign({}, defaults.stages, saved.stages || {}),
+    progression: Object.assign({}, defaults.progression, saved.progression || {}),
+    stage11Variant: saved.stage11Variant || defaults.stage11Variant,
+    dietTemplate: saved.dietTemplate || defaults.dietTemplate,
+    updatedAt: saved.updatedAt || null
+  };
+}
+
+function saveProgramSettings(settings) {
+  const merged = Object.assign({}, getProgramSettings(), settings || {});
+  if (merged.progression) {
+    merged.progression.base = clampProgression(parseFloat(merged.progression.base || DEFAULT_PROGRESSION.base));
+    merged.progression.compound = clampProgression(parseFloat(merged.progression.compound || DEFAULT_PROGRESSION.compound));
+    merged.progression.max = 0.10;
+    merged.progression.min = 0.025;
+    merged.progression.recommended = 0.05;
+  }
+  merged.updatedAt = new Date().toISOString();
+  lsSet('program_settings', merged);
+  saveMeta({ stage11Variant: merged.stage11Variant });
+  return merged;
+}
+
+function resetProgramSettings() {
+  lsSet('program_settings', getDefaultProgramSettings());
+  return getProgramSettings();
+}
+
+function clampProgression(value) {
+  if (!value || value < 0.025) return 0.025;
+  if (value > 0.10) return 0.10;
+  return Math.round(value * 1000) / 1000;
 }
 
 // ── CRUD de logs diarios ──────────────────────
@@ -168,14 +285,17 @@ function getWeekStats(dateStr) {
     ? (totalDone + totalPartial * 0.5) / totalScheduled
     : 0;
 
+  const progression = getEffectiveProgression();
   const applyProgression = consistency >= CONFIG.CONSISTENCY.GOOD;
   const stageId = getStageForDate(dateStr);
   const weekNum  = getWeekInStage(dateStr);
-  const isDeload = weekNum % CONFIG.DELOAD_EVERY === 0;
+  const settings = getProgramSettings();
+  const deloadEvery = settings.progression.deloadEvery || CONFIG.DELOAD_EVERY;
+  const isDeload = weekNum % deloadEvery === 0;
 
   return {
     totalScheduled, totalDone, totalPartial,
-    consistency, applyProgression, isDeload,
+    consistency, applyProgression, isDeload, progression,
     counts: { gym, swim, bjj, box, mob },
     minimums: {
       gym:  { req: CONFIG.MINIMUMS.gym,  done: gym,  ok: gym  >= CONFIG.MINIMUMS.gym  },
@@ -295,6 +415,29 @@ function saveBodyMetric(entry) {
 }
 function getLatestMetric() { return getBodyMetrics(1)[0] || null; }
 
+function getMeasurementFields() {
+  return lsGet('measurement_fields') || [
+    { id: 'weight', label: 'Peso', unit: 'kg', core: true },
+    { id: 'waist', label: 'Cintura', unit: 'cm', core: true },
+    { id: 'hip', label: 'Cadera', unit: 'cm', core: true },
+    { id: 'chest', label: 'Pecho', unit: 'cm', core: true },
+    { id: 'bicepR', label: 'Bíceps D', unit: 'cm', core: true },
+    { id: 'thighR', label: 'Muslo D', unit: 'cm', core: true }
+  ];
+}
+
+function saveMeasurementFields(fields) {
+  lsSet('measurement_fields', fields);
+}
+
+function addCustomMeasurementField(label, unit) {
+  const fields = getMeasurementFields();
+  const id = 'custom_' + label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') + '_' + Date.now().toString(36);
+  fields.push({ id: id, label: label, unit: unit || 'cm', core: false });
+  saveMeasurementFields(fields);
+  return fields;
+}
+
 // ── Marcadores de laboratorio ─────────────────
 function getBiomarkers() { return lsGet('biomarkers') || []; }
 function saveBiomarkerEntry(entry) {
@@ -317,4 +460,21 @@ function addScheduleOverride(ov) {
 }
 function removeScheduleOverride(id) {
   lsSet('schedule_overrides', getScheduleOverrides().filter(function(o) { return o.id !== id; }));
+}
+
+function addProgramOverride(ov) {
+  var all = lsGet('program_overrides') || [];
+  ov.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  ov.createdAt = new Date().toISOString();
+  all.push(ov);
+  lsSet('program_overrides', all);
+}
+
+function getProgramOverrides() {
+  return lsGet('program_overrides') || [];
+}
+
+function clearProgramOverrides() {
+  lsSet('program_overrides', []);
+  lsSet('schedule_overrides', []);
 }

@@ -188,6 +188,7 @@ const WEEKEND_VARIANTS = {
 // ── Función principal de consulta ────────────
 function applyOverridesToSchedule(date, activities) {
   var overrides = getScheduleOverrides();
+  var programOverrides = typeof getProgramOverrides === 'function' ? getProgramOverrides() : [];
   var d = new Date(date + 'T00:00:00');
   var dayOfWeek = d.getDay() || 7;
   var result = activities.slice();
@@ -204,6 +205,18 @@ function applyOverridesToSchedule(date, activities) {
       if (actDef && !result.find(function(a) { return a.id === ov.activityId; })) {
         result.push(Object.assign({}, actDef, { movedFrom: ov.fromDay }));
       }
+    }
+  });
+  programOverrides.forEach(function(ov) {
+    if (ov.type === 'hide') {
+      result = result.filter(function(a) { return a.id !== ov.activityId; });
+    }
+    if (ov.type === 'replace') {
+      result = result.map(function(a) {
+        return a.id === ov.activityId
+          ? Object.assign({}, a, { name: ov.name || a.name, notes: ov.notes || a.notes, replaced: true })
+          : a;
+      });
     }
   });
   return result;
@@ -232,14 +245,16 @@ function getSchedule(date, stageId, variant, satWasKB) {
     const weekNum = getISOWeek(d);
     const isOddWeek = weekNum % 2 === 1;
     if (dayKey === 6) {
-      return isOddWeek
+      const weekendBase = isOddWeek
         ? WEEKEND_VARIANTS['0'].sat_odd
         : WEEKEND_VARIANTS['0'].sat_even;
+      return applyOverridesToSchedule(typeof date === 'string' ? date : toDateStr(date), weekendBase);
     }
     if (dayKey === 7) {
-      return satWasKB
+      const weekendBase = satWasKB
         ? WEEKEND_VARIANTS['0'].sun_after_kb
         : WEEKEND_VARIANTS['0'].sun_after_hiking;
+      return applyOverridesToSchedule(typeof date === 'string' ? date : toDateStr(date), weekendBase);
     }
   }
 

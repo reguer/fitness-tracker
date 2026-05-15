@@ -8,6 +8,14 @@ const CONFIG = {
   // ⚠️ Pega aquí tu URL de Google Apps Script después del paso 3 del README
   APPS_SCRIPT_URL: '',
 
+  // Firebase es opcional: la app funciona localmente si estos campos quedan vacíos.
+  FIREBASE_CONFIG: {
+    apiKey: '',
+    authDomain: '',
+    projectId: '',
+    appId: ''
+  },
+
   // Fechas de cada etapa (YYYY-MM-DD)
   STAGES: {
     '0': {
@@ -66,6 +74,41 @@ const CONFIG = {
   }
 };
 
+const DEFAULT_STAGES = JSON.parse(JSON.stringify(CONFIG.STAGES));
+const DEFAULT_PROGRESSION = JSON.parse(JSON.stringify(CONFIG.PROGRESSION));
+const DIET_TEMPLATES = {
+  hepatic: {
+    id: 'hepatic',
+    label: 'Plan hepático actual',
+    note: 'Prioriza hígado graso, triglicéridos y digestión ligera.',
+    focus: 'Verduras, fruta sola, pescado graso, nopal, betabel y té hepático.'
+  },
+  recomposition: {
+    id: 'recomposition',
+    label: 'Recomposición',
+    note: 'Mantiene el enfoque hepático con proteína moderada y suficiente energía para gym.',
+    focus: 'Proteína + verdura en días de fuerza; fruta sola en días suaves.'
+  },
+  fat_loss: {
+    id: 'fat_loss',
+    label: 'Pérdida de grasa',
+    note: 'Reduce densidad calórica sin saltarse hidratación ni recuperación.',
+    focus: 'Verduras, legumbres, cenas ligeras y control de guarniciones.'
+  },
+  performance: {
+    id: 'performance',
+    label: 'Rendimiento BJJ/Box',
+    note: 'Sube carbohidrato limpio alrededor del entrenamiento intenso.',
+    focus: 'Plátano, camote, fruta separada y electrolitos naturales.'
+  },
+  vegetarian_light: {
+    id: 'vegetarian_light',
+    label: 'Vegetariana ligera',
+    note: 'Baja proteína animal sin caer en harinas ni ultraprocesados.',
+    focus: 'Lentejas, frijol negro, hongos, huevo moderado y verduras.'
+  }
+};
+
 // Convierte 'YYYY-MM-DD' a objeto Date en hora local
 function parseDate(str) {
   const [y, m, d] = str.split('-').map(Number);
@@ -75,7 +118,7 @@ function parseDate(str) {
 // Devuelve el id de etapa activo para una fecha dada
 function getStageForDate(date) {
   const d = date instanceof Date ? date : parseDate(date);
-  const stages = Object.values(CONFIG.STAGES);
+  const stages = Object.values(getEffectiveStages());
   for (let i = stages.length - 1; i >= 0; i--) {
     const s = stages[i];
     if (d >= parseDate(s.startDate)) {
@@ -89,9 +132,36 @@ function getStageForDate(date) {
 function getWeekInStage(date) {
   const d = date instanceof Date ? date : parseDate(date);
   const stageId = getStageForDate(d);
-  const start = parseDate(CONFIG.STAGES[stageId].startDate);
+  const start = parseDate(getEffectiveStages()[stageId].startDate);
   const diffMs = d - start;
   return Math.floor(diffMs / (7 * 86400000)) + 1;
+}
+
+function getEffectiveStages() {
+  if (typeof getProgramSettings === 'function') {
+    const settings = getProgramSettings();
+    if (settings && settings.stages) {
+      const merged = JSON.parse(JSON.stringify(DEFAULT_STAGES));
+      Object.keys(settings.stages).forEach(id => {
+        if (merged[id]) {
+          merged[id].startDate = settings.stages[id].startDate || merged[id].startDate;
+          merged[id].endDate = settings.stages[id].endDate === undefined ? merged[id].endDate : settings.stages[id].endDate;
+        }
+      });
+      return merged;
+    }
+  }
+  return CONFIG.STAGES;
+}
+
+function getEffectiveProgression() {
+  if (typeof getProgramSettings === 'function') {
+    const settings = getProgramSettings();
+    if (settings && settings.progression) {
+      return Object.assign({}, DEFAULT_PROGRESSION, settings.progression);
+    }
+  }
+  return CONFIG.PROGRESSION;
 }
 
 // Número de semana del año (ISO-like, Lunes = inicio)

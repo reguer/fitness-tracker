@@ -140,7 +140,7 @@ html, body {
 .tab {
   flex: 1;
   padding: 10px 4px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   background: none;
   border: none;
@@ -567,3 +567,69 @@ html, body {
 .modal-opt:active { background:var(--border); }
 .btn-primary { width:100%; padding:12px; background:var(--primary); border:none; border-radius:var(--radius-sm); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
 .btn-primary:active { background:var(--primary-dim); }
+
+/* ── Configuración avanzada ───────────────── */
+.profile-chip {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 10px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); background:var(--surface-2);
+  color:var(--text-muted); font-size:13px; font-weight:600;
+}
+.auth-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
+.stage-edit-row { margin-bottom:10px; }
+.stage-edit-row input + input { margin-top:6px; }
+.progression-summary {
+  display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+  margin-bottom:12px;
+}
+.progression-summary span {
+  padding:6px 4px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); background:var(--surface-2);
+  color:var(--text-muted); font-size:11px; text-align:center; font-weight:700;
+}
+.program-editor-list { display:flex; flex-direction:column; gap:6px; }
+.editor-row {
+  display:grid; grid-template-columns:1fr auto auto; gap:6px; align-items:center;
+  padding:8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--surface-2); font-size:12px;
+}
+.btn-mini {
+  border:1px solid var(--border); background:var(--surface);
+  color:var(--text-muted); border-radius:4px; padding:4px 6px;
+  font-size:11px; cursor:pointer;
+}
+.btn-mini:active { background:var(--border); }
+
+/* ── Medidas ──────────────────────────────── */
+.measurement-list { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+.measurement-row {
+  display:flex; flex-direction:column; gap:2px;
+  padding:8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--surface-2); font-size:12px;
+}
+.measurement-row span { color:var(--text-muted); }
+.measure-sheet { max-height:88vh; overflow-y:auto; }
+
+/* ── Guía visual de ejercicios ─────────────── */
+.act-guide { padding:8px 12px 12px; border-top:1px solid var(--border); }
+.guide-section { margin-bottom:10px; }
+.guide-section strong { display:block; color:var(--text); font-size:12px; margin-bottom:4px; }
+.guide-section ul { padding-left:16px; color:var(--text-muted); font-size:12px; line-height:1.6; }
+.guide-section p { color:var(--text-muted); font-size:13px; line-height:1.5; }
+.exercise-strip {
+  display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:8px;
+}
+.exercise-thumb {
+  display:flex; flex-direction:column; gap:5px;
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--surface); color:var(--text-muted); padding:6px;
+  cursor:pointer; text-align:left; font-size:11px;
+}
+.exercise-thumb img { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:4px; background:#111; }
+.exercise-sheet { max-height:88vh; overflow-y:auto; }
+.exercise-hero { width:100%; border-radius:var(--radius-sm); border:1px solid var(--border); margin-bottom:12px; background:#111; }
+.exercise-meta {
+  display:inline-flex; padding:4px 8px; background:rgba(99,102,241,.12);
+  border:1px solid rgba(99,102,241,.3); border-radius:999px;
+  color:#a5b4fc; font-size:12px; font-weight:700; margin-bottom:12px;
+}

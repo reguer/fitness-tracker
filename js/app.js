@@ -26,12 +26,13 @@ function renderAll() {
   if (STATE.activeTab === 'week')      renderWeek();
   if (STATE.activeTab === 'progress')  renderProgress();
   if (STATE.activeTab === 'nutrition') renderNutrition();
+  if (STATE.activeTab === 'config')    renderConfig();
 }
 
 // ── Header ────────────────────────────────────
 function renderHeader() {
   const stageId  = getStageForDate(STATE.today);
-  const stage    = CONFIG.STAGES[stageId];
+  const stage    = getEffectiveStages()[stageId];
   const weekNum  = getWeekInStage(STATE.today);
 
   const badge = document.getElementById('stage-badge');
@@ -39,7 +40,8 @@ function renderHeader() {
   badge.style.backgroundColor = stage.color;
 
   document.getElementById('current-date').textContent = formatDateLong(new Date(STATE.today + 'T00:00:00'));
-  document.getElementById('week-info').textContent    = `Semana ${weekNum} — ${stage.short}`;
+  const user = getActiveUser();
+  document.getElementById('week-info').textContent    = `Semana ${weekNum} — ${stage.short} · ${user.name || 'Local'}`;
 }
 
 // ── Tabs ──────────────────────────────────────
@@ -149,10 +151,47 @@ function renderActivityCard(act, log, dateStr) {
       </div>
     </div>
     <details class="act-details">
-      <summary>Ver notas del ejercicio</summary>
-      <pre class="act-notes">${act.notes || 'Sin notas adicionales.'}</pre>
+      <summary>Ver guía ordenada</summary>
+      ${renderActivityGuide(act)}
     </details>
   `;
+}
+
+function renderActivityGuide(act) {
+  const sections = splitActivityNotes(act.notes || '');
+  const exercises = getExercisesForActivity(act.id);
+  let html = '<div class="act-guide">';
+  Object.keys(sections).forEach(key => {
+    if (!sections[key].length) return;
+    html += '<div class="guide-section"><strong>' + key + '</strong><ul>' +
+      sections[key].map(item => '<li>' + item + '</li>').join('') + '</ul></div>';
+  });
+  if (exercises.length) {
+    html += '<div class="exercise-strip">' + exercises.map(ex => (
+      '<button class="exercise-thumb" onclick="showExerciseModal(\'' + ex.id + '\')">' +
+      '<img src="' + ex.image + '" alt="' + ex.name + '">' +
+      '<span>' + ex.name + '</span></button>'
+    )).join('') + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function splitActivityNotes(notes) {
+  const sections = { Calentamiento: [], Principal: [], Accesorios: [], Core: [], Notas: [], Restricciones: [] };
+  notes.split('\n').forEach(line => {
+    line.split(' · ').forEach(part => {
+      const item = part.trim();
+      if (!item) return;
+      const upper = item.toUpperCase();
+      if (upper.indexOf('CALENTAMIENTO:') === 0) sections.Calentamiento.push(item.replace(/CALENTAMIENTO:\s*/i, ''));
+      else if (upper.indexOf('CORE') === 0) sections.Core.push(item.replace(/CORE:?\s*/i, ''));
+      else if (item.indexOf('⚠️') >= 0 || upper.indexOf('EVITAR') >= 0) sections.Restricciones.push(item);
+      else if (/\d×|\d x |Press|Jalón|Remo|Leg|Goblet|Hip|Bulgarian|Curl|Extensión|Elevaciones|Face|Skull/i.test(item)) sections.Principal.push(item);
+      else sections.Notas.push(item);
+    });
+  });
+  return sections;
 }
 
 function renderWeekPills(activeDate) {
@@ -204,7 +243,7 @@ function renderWeek() {
   container.innerHTML = `
     <div class="week-header">
       <h2>Semana actual</h2>
-      <p class="stage-label">${CONFIG.STAGES[stageId].name}</p>
+      <p class="stage-label">${getEffectiveStages()[stageId].name}</p>
     </div>
 
     <div class="week-grid">
@@ -275,6 +314,11 @@ function renderProgress() {
   const weekNum    = getWeekInStage(STATE.today);
   const pct        = Math.round(stats.consistency * 100);
   const isDeload   = stats.isDeload;
+  const settings   = getProgramSettings();
+  const prog       = settings.progression;
+  const profile    = getProfile();
+  const metrics    = getBodyMetrics(6);
+  const fields     = getMeasurementFields();
 
   container.innerHTML = `
     <div class="progress-header">
@@ -282,7 +326,7 @@ function renderProgress() {
     </div>
 
     <div class="prog-card">
-      <div class="prog-stage">${CONFIG.STAGES[stageId].name}</div>
+      <div class="prog-stage">${getEffectiveStages()[stageId].name}</div>
       <div class="prog-week">Semana ${weekNum}</div>
       <div class="prog-bar-wrap">
         <div class="prog-bar-track">
@@ -292,13 +336,13 @@ function renderProgress() {
         </div>
         <div class="prog-bar-labels">
           <span>${pct}% completado</span>
-          <span class="muted">80% para subir carga</span>
+          <span class="muted">${Math.round((prog.base || 0.05) * 1000) / 10}% recomendado</span>
         </div>
       </div>
 
       <div class="prog-verdict ${stats.applyProgression ? 'verdict-yes' : 'verdict-no'}">
         ${stats.applyProgression
-          ? '✅ Puedes aumentar carga la próxima semana'
+          ? `✅ Puedes aumentar ${Math.round((prog.base || 0.05) * 1000) / 10}% la próxima semana`
           : `⏸ Mantén carga actual (faltan ${Math.ceil((CONFIG.CONSISTENCY.GOOD - stats.consistency) * 100)}% de consistencia)`
         }
       </div>
@@ -307,18 +351,23 @@ function renderProgress() {
     ${isDeload ? `
       <div class="alert alert-deload">
         🔄 <strong>Esta es semana de descarga (cada 4 semanas).</strong>
-        Usa 70% del peso y volumen habituales. Es obligatoria para recuperación nerviosa y muscular.
+        Usa ${Math.round((prog.deload || 0.7) * 100)}% del peso y volumen habituales. Es obligatoria para recuperación nerviosa y muscular.
       </div>
     ` : ''}
 
     <div class="prog-card">
       <h3>Guía de progresión</h3>
+      <div class="progression-summary">
+        <span>Mín ${Math.round(prog.min * 1000) / 10}%</span>
+        <span>Rec ${Math.round(prog.recommended * 1000) / 10}%</span>
+        <span>Tope ${Math.round(prog.max * 1000) / 10}%</span>
+      </div>
       <table class="prog-table">
         <thead>
           <tr><th>Ejercicio</th><th>Aumento si 80%+</th><th>Notas</th></tr>
         </thead>
         <tbody>
-          <tr><td>Lifts compuestos (gym)</td><td>+5–10%</td><td>Depende de etapa</td></tr>
+          <tr><td>Lifts compuestos (gym)</td><td>+${Math.round((prog.base || 0.05) * 1000) / 10}%</td><td>Tope seguro ${Math.round(prog.max * 1000) / 10}%</td></tr>
           <tr><td>Ejercicios accesorios</td><td>+1 rep ó +2.5kg</td><td>Cuando llega al límite de reps</td></tr>
           <tr><td>KB Goblet/Remo</td><td>8 → 12 → 16 kg</td><td>Cuando 3 sets se sienten ligeros</td></tr>
           <tr><td>Nado intenso</td><td>+1 intervalo 100m</td><td>O pasar a 4×200m</td></tr>
@@ -330,7 +379,7 @@ function renderProgress() {
 
     <div class="prog-card">
       <h3>Etapas del programa</h3>
-      ${Object.values(CONFIG.STAGES).map(s => {
+      ${Object.values(getEffectiveStages()).map(s => {
         const current  = s.id === stageId;
         const startD   = new Date(s.startDate + 'T00:00:00');
         const today    = new Date(STATE.today  + 'T00:00:00');
@@ -349,6 +398,19 @@ function renderProgress() {
       }).join('')}
     </div>
 
+    <div class="prog-card">
+      <h3>Perfil y medidas</h3>
+      <p class="muted" style="font-size:12px;margin-bottom:10px">
+        Recomendado: una vez al mes, en ayunas, antes de ejercitarte y sin flexionar músculos.
+      </p>
+      <div class="profile-chip">${profile ? profile.weight + 'kg · ' + profile.height + 'cm · ' + profile.age + ' años' : 'Perfil incompleto'}</div>
+      <button class="btn-outline mt-8" onclick="showProfileModal(true)">Editar perfil</button>
+      <button class="btn-outline mt-8" onclick="showMeasurementModal()">Nueva captura</button>
+      <div class="measurement-list">
+        ${metrics.length ? metrics.map(m => renderMeasurementRow(m, fields)).join('') : '<p class="muted" style="font-size:12px;margin-top:8px">Aún no hay capturas.</p>'}
+      </div>
+    </div>
+
     <div class="prog-card meta-card">
       <h3>Configuración</h3>
       <div class="config-row">
@@ -358,6 +420,7 @@ function renderProgress() {
           <option value="3box" ${getMeta().stage11Variant === '3box' ? 'selected' : ''}>3 días Box (L + J + S)</option>
         </select>
       </div>
+      <button class="btn-outline mt-8" onclick="goToConfig()">Editar programa avanzado</button>
       <div class="config-row">
         <label>Último sync:</label>
         <span class="muted">${getMeta().lastSync ? new Date(getMeta().lastSync).toLocaleString('es-MX') : 'Nunca'}</span>
@@ -374,6 +437,7 @@ function renderNutrition() {
   var weekStats = getWeeklyNutritionStats(dateStr);
   var stageId  = getStageForDate(dateStr);
   var meal     = NUTRITION_PLAN.meals[stageId] || NUTRITION_PLAN.meals['0'];
+  var diet     = DIET_TEMPLATES[getProgramSettings().dietTemplate] || DIET_TEMPLATES.hepatic;
   var biomarks = getBiomarkers();
   var latest   = biomarks[0] || null;
 
@@ -426,7 +490,13 @@ function renderNutrition() {
 
   document.getElementById('tab-nutrition').innerHTML =
     '<div class="nut-header"><h2>Nutrición</h2>' +
-    '<span class="stage-label">' + CONFIG.STAGES[stageId].short + ' · ' + meal.protein_g + 'g proteína/día</span></div>' +
+    '<span class="stage-label">' + getEffectiveStages()[stageId].short + ' · ' + meal.protein_g + 'g proteína/día</span></div>' +
+
+    '<div class="prog-card"><h3>Tipo de dieta</h3>' +
+    '<div class="profile-chip">' + diet.label + '</div>' +
+    '<p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-top:8px">' + diet.note + '</p>' +
+    '<div class="nut-rule mt-8">' + diet.focus + '</div>' +
+    '<button class="btn-outline mt-8" onclick="goToConfig()">Cambiar plantilla</button></div>' +
 
     '<div class="prog-card"><h3>Checklist de hoy</h3>' +
     '<div class="nut-checklist">' + checklistHTML + '</div></div>' +
@@ -648,7 +718,7 @@ function saveProfileModal() {
   var h = parseFloat(document.getElementById('pf-height').value);
   var a = parseInt(document.getElementById('pf-age').value);
   if (!w || !h || !a) { alert('Peso, altura y edad son obligatorios.'); return; }
-  var p = { weight:w, height:h, age:a, goal: document.getElementById('pf-goal').value };
+  var p = { weight:w, height:h, age:a, goal: document.getElementById('pf-goal').value, dietTemplate: getProgramSettings().dietTemplate };
   ['waist','hip','chest','bicepR','thighR'].forEach(function(id) {
     var el = document.getElementById('pf-' + id);
     if (el && el.value) p[id] = parseFloat(el.value);
@@ -705,4 +775,248 @@ function applyMoveDay(fromDate, activityId, toDate) {
   });
   document.getElementById('move-modal').remove();
   renderAll();
+}
+
+// ── Configuración avanzada ────────────────────
+function renderConfig() {
+  var container = document.getElementById('tab-config');
+  var user = getActiveUser();
+  var settings = getProgramSettings();
+  var stages = getEffectiveStages();
+  var prog = settings.progression;
+  var firebaseReady = hasFirebaseConfig();
+  var dietOpts = Object.keys(DIET_TEMPLATES).map(function(id) {
+    var d = DIET_TEMPLATES[id];
+    return '<option value="' + id + '"' + (settings.dietTemplate === id ? ' selected' : '') + '>' + d.label + '</option>';
+  }).join('');
+
+  container.innerHTML =
+    '<div class="progress-header"><h2>Configuración</h2></div>' +
+
+    '<div class="prog-card"><h3>Usuario</h3>' +
+    '<div class="profile-chip">' + (user.provider === 'firebase' ? 'Cloud' : 'Local') + ' · ' + (user.email || user.name || 'Sin sesión') + '</div>' +
+    '<p class="muted" style="font-size:12px;margin-top:8px">' + (firebaseReady ? 'Firebase configurado.' : 'Firebase aún no tiene credenciales; los datos se guardan localmente por ahora.') + '</p>' +
+    '<div class="auth-actions">' +
+    '<button class="btn-outline" onclick="handleGoogleLogin()">Google</button>' +
+    '<button class="btn-outline" onclick="showEmailLoginModal()">Email</button>' +
+    '<button class="btn-outline" onclick="handleLogout()">Salir</button>' +
+    '</div></div>' +
+
+    '<div class="prog-card"><h3>Fases del programa</h3>' +
+    Object.keys(stages).map(function(id) {
+      var s = stages[id];
+      return '<div class="form-group stage-edit-row"><label class="form-label">' + s.short + '</label>' +
+        '<input id="stage-' + id + '-start" type="date" class="form-input" value="' + s.startDate + '">' +
+        '<input id="stage-' + id + '-end" type="date" class="form-input" value="' + (s.endDate || '') + '" placeholder="Sin fin">' +
+        '</div>';
+    }).join('') +
+    '<button class="btn-primary mt-8" onclick="saveProgramConfig()">Guardar fechas</button>' +
+    '<button class="btn-outline mt-8" style="width:100%" onclick="restoreBaseProgram()">Restaurar programa original</button></div>' +
+
+    '<div class="prog-card"><h3>Progresión</h3>' +
+    '<div class="progression-summary"><span>Mín 2.5%</span><span>Recomendado 5%</span><span>Tope 10%</span></div>' +
+    '<div class="form-group"><label class="form-label">Incremento semanal (%)</label><input id="prog-base" type="number" min="2.5" max="10" step="0.5" class="form-input" value="' + (Math.round((prog.base || 0.05) * 1000) / 10) + '"></div>' +
+    '<div class="form-group"><label class="form-label">Compuestos (%)</label><input id="prog-compound" type="number" min="2.5" max="10" step="0.5" class="form-input" value="' + (Math.round((prog.compound || 0.10) * 1000) / 10) + '"></div>' +
+    '<div class="form-group"><label class="form-label">Semana de descarga cada</label><input id="prog-deload-every" type="number" min="3" max="8" step="1" class="form-input" value="' + (prog.deloadEvery || 4) + '"></div>' +
+    '<button class="btn-primary mt-8" onclick="saveProgressionConfig()">Guardar progresión</button></div>' +
+
+    '<div class="prog-card"><h3>Tipo de dieta</h3>' +
+    '<select id="diet-template" class="form-input">' + dietOpts + '</select>' +
+    '<p class="muted" style="font-size:12px;margin-top:8px">Todas las plantillas mantienen las restricciones médicas definidas.</p>' +
+    '<button class="btn-primary mt-8" onclick="saveDietTemplate()">Guardar dieta</button></div>' +
+
+    '<div class="prog-card"><h3>Editor del programa</h3>' +
+    '<p class="muted" style="font-size:12px;margin-bottom:10px">Puedes ocultar o reemplazar actividades sin borrar el programa base.</p>' +
+    '<div class="program-editor-list">' + Object.keys(ACTIVITIES).map(function(id) {
+      var a = ACTIVITIES[id];
+      return '<div class="editor-row"><span>' + a.emoji + ' ' + a.name + '</span>' +
+        '<button class="btn-mini" onclick="hideActivityOverride(\'' + id + '\')">Ocultar</button>' +
+        '<button class="btn-mini" onclick="showReplaceActivityModal(\'' + id + '\')">Reemplazar</button></div>';
+    }).join('') + '</div>' +
+    '<button class="btn-outline mt-8" style="width:100%" onclick="clearAllProgramOverrides()">Quitar ajustes</button></div>';
+}
+
+function goToConfig() {
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector('[data-tab="config"]').classList.add('active');
+  document.getElementById('tab-config').classList.add('active');
+  STATE.activeTab = 'config';
+  renderAll();
+}
+
+function saveProgramConfig() {
+  var settings = getProgramSettings();
+  Object.keys(settings.stages).forEach(function(id) {
+    var start = document.getElementById('stage-' + id + '-start');
+    var end = document.getElementById('stage-' + id + '-end');
+    if (start && start.value) settings.stages[id].startDate = start.value;
+    if (end) settings.stages[id].endDate = end.value || null;
+  });
+  saveProgramSettings(settings);
+  renderAll();
+}
+
+function saveProgressionConfig() {
+  var base = parseFloat(document.getElementById('prog-base').value) / 100;
+  var compound = parseFloat(document.getElementById('prog-compound').value) / 100;
+  if (base > 0.10 || compound > 0.10) alert('Tope seguro: 10%. Se guardará el máximo permitido.');
+  var settings = getProgramSettings();
+  settings.progression.base = clampProgression(base);
+  settings.progression.compound = clampProgression(compound);
+  settings.progression.deloadEvery = parseInt(document.getElementById('prog-deload-every').value) || 4;
+  saveProgramSettings(settings);
+  renderAll();
+}
+
+function saveDietTemplate() {
+  var settings = getProgramSettings();
+  settings.dietTemplate = document.getElementById('diet-template').value;
+  saveProgramSettings(settings);
+  var p = getProfile() || {};
+  p.dietTemplate = settings.dietTemplate;
+  saveProfile(p);
+  renderAll();
+}
+
+function restoreBaseProgram() {
+  resetProgramSettings();
+  clearProgramOverrides();
+  renderAll();
+}
+
+function hideActivityOverride(activityId) {
+  addProgramOverride({ type: 'hide', activityId: activityId });
+  renderAll();
+}
+
+function showReplaceActivityModal(activityId) {
+  var act = ACTIVITIES[activityId];
+  var html = '<div class="modal-overlay" id="replace-modal"><div class="modal-sheet">' +
+    '<h3 class="modal-title">Reemplazar: ' + act.name + '</h3>' +
+    '<div class="form-group"><label class="form-label">Nuevo nombre</label><input id="replace-name" class="form-input" placeholder="Ejercicio seguro alternativo"></div>' +
+    '<div class="form-group"><label class="form-label">Notas</label><textarea id="replace-notes" class="form-input" rows="4" placeholder="Series, técnica y restricciones"></textarea></div>' +
+    '<p class="muted" style="font-size:12px">No uses sentadilla con barra, peso muerto pesado, good mornings, deficit deadlift ni dominadas/dips con peso extra.</p>' +
+    '<button class="btn-primary mt-8" onclick="saveReplaceActivity(\'' + activityId + '\')">Guardar reemplazo</button>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'replace-modal\').remove()">Cancelar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+
+function saveReplaceActivity(activityId) {
+  var name = document.getElementById('replace-name').value.trim();
+  var notes = document.getElementById('replace-notes').value.trim();
+  var unsafe = /sentadilla con barra|peso muerto pesado|good morning|deficit deadlift|dominadas.*peso|dips.*peso/i;
+  if (unsafe.test(name + ' ' + notes)) {
+    alert('Ese reemplazo aparece en la lista de movimientos restringidos.');
+    return;
+  }
+  addProgramOverride({ type: 'replace', activityId: activityId, name: name, notes: notes });
+  document.getElementById('replace-modal').remove();
+  renderAll();
+}
+
+function clearAllProgramOverrides() {
+  clearProgramOverrides();
+  renderAll();
+}
+
+// ── Medidas ───────────────────────────────────
+function renderMeasurementRow(entry, fields) {
+  var vals = fields.filter(f => entry[f.id] !== undefined && entry[f.id] !== null && entry[f.id] !== '')
+    .map(f => f.label + ': ' + entry[f.id] + f.unit).join(' · ');
+  return '<div class="measurement-row"><strong>' + entry.date + '</strong><span>' + vals + '</span></div>';
+}
+
+function showMeasurementModal() {
+  var fields = getMeasurementFields();
+  var html = '<div class="modal-overlay" id="measure-modal"><div class="modal-sheet measure-sheet">' +
+    '<h3 class="modal-title">Nueva captura de medidas</h3>' +
+    '<p class="muted" style="font-size:12px;margin-bottom:10px">Ideal: mensual, en ayunas, antes de entrenar y sin flexionar.</p>' +
+    '<div class="form-group"><label class="form-label">Fecha</label><input id="metric-date" type="date" class="form-input" value="' + STATE.today + '"></div>' +
+    fields.map(function(f) {
+      return '<div class="form-group"><label class="form-label">' + f.label + ' (' + f.unit + ')</label><input id="metric-' + f.id + '" type="number" class="form-input"></div>';
+    }).join('') +
+    '<button class="btn-outline mt-8" style="width:100%" onclick="showCustomMeasureField()">+ Agregar medida</button>' +
+    '<button class="btn-primary mt-8" onclick="saveMeasurementModal()">Guardar captura</button>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'measure-modal\').remove()">Cancelar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+
+function showCustomMeasureField() {
+  var label = prompt('Nombre de la nueva medida');
+  if (!label) return;
+  var unit = prompt('Unidad', 'cm') || 'cm';
+  addCustomMeasurementField(label, unit);
+  document.getElementById('measure-modal').remove();
+  showMeasurementModal();
+}
+
+function saveMeasurementModal() {
+  var entry = { date: document.getElementById('metric-date').value || STATE.today };
+  getMeasurementFields().forEach(function(f) {
+    var el = document.getElementById('metric-' + f.id);
+    if (el && el.value) entry[f.id] = parseFloat(el.value);
+  });
+  saveBodyMetric(entry);
+  document.getElementById('measure-modal').remove();
+  renderAll();
+}
+
+// ── Login ─────────────────────────────────────
+async function handleGoogleLogin() {
+  try {
+    await window.FitFirebase.signInGoogle();
+    showSyncStatus('ok', 'Sesión iniciada');
+  } catch (err) {
+    showSyncStatus('error', err.message || 'Firebase no configurado');
+  }
+}
+
+function showEmailLoginModal() {
+  var html = '<div class="modal-overlay" id="email-modal"><div class="modal-sheet">' +
+    '<h3 class="modal-title">Acceso por email</h3>' +
+    '<div class="form-group"><label class="form-label">Email</label><input id="auth-email" type="email" class="form-input"></div>' +
+    '<div class="form-group"><label class="form-label">Contraseña</label><input id="auth-pass" type="password" class="form-input"></div>' +
+    '<button class="btn-primary mt-8" onclick="handleEmailLogin(false)">Entrar</button>' +
+    '<button class="btn-outline mt-8" style="width:100%" onclick="handleEmailLogin(true)">Crear cuenta</button>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'email-modal\').remove()">Cancelar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
+}
+
+async function handleEmailLogin(register) {
+  var email = document.getElementById('auth-email').value;
+  var pass = document.getElementById('auth-pass').value;
+  try {
+    if (register) await window.FitFirebase.registerEmail(email, pass);
+    else await window.FitFirebase.signInEmail(email, pass);
+    document.getElementById('email-modal').remove();
+    showSyncStatus('ok', 'Sesión iniciada');
+  } catch (err) {
+    showSyncStatus('error', err.message || 'Error de acceso');
+  }
+}
+
+async function handleLogout() {
+  try { await window.FitFirebase.signOut(); }
+  catch { setStorageUserId('local'); }
+  renderAll();
+}
+
+// ── Ejercicios visuales ───────────────────────
+function showExerciseModal(exerciseId) {
+  var ex = EXERCISE_LIBRARY[exerciseId];
+  if (!ex) return;
+  var html = '<div class="modal-overlay" id="exercise-modal"><div class="modal-sheet exercise-sheet">' +
+    '<img class="exercise-hero" src="' + ex.image + '" alt="' + ex.name + '">' +
+    '<h3 class="modal-title">' + ex.name + '</h3>' +
+    '<div class="exercise-meta">' + ex.prescription + '</div>' +
+    '<div class="guide-section"><strong>Técnica</strong><p>' + ex.technique + '</p></div>' +
+    '<div class="guide-section"><strong>Precaución lumbar</strong><p>' + ex.caution + '</p></div>' +
+    '<div class="guide-section"><strong>Alternativa segura</strong><p>' + ex.alternatives + '</p></div>' +
+    '<button class="btn-outline mt-8" style="width:100%;margin-top:8px" onclick="document.getElementById(\'exercise-modal\').remove()">Cerrar</button>' +
+    '</div></div>';
+  document.getElementById('app').insertAdjacentHTML('beforeend', html);
 }
